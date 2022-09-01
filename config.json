@@ -1,0 +1,12 @@
+{
+    "categories": [],
+    "output_directory": "",
+    "logs_dir": "logs", 
+    "delay_range_s": "2-5", 
+    "max_retries": 5, 
+    "headers": ["User-agent"], 
+    "restart": {
+        "restart_count": 3,
+        "interval_m": 0.2
+    }
+}
