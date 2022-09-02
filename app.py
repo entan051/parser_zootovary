@@ -1,5 +1,5 @@
 import os
-import re
+import sys
 import csv
 import json
 import time
@@ -8,9 +8,10 @@ import logging
 import requests
 from datetime import datetime
 from bs4 import BeautifulSoup
+from logging import StreamHandler, Formatter
 
 
-class Config:
+class Config: #Класс для работы с конфигурационными файлами.
     def __init__(self):
         with open("default.json", "r") as default_config_file:
             self.settings = json.load(default_config_file)
@@ -32,13 +33,20 @@ class Config:
         return self.settings
 
 
-class Logger:
+class Logger: #Класс для работы с log файлами и настройки логирования.
     def __init__(self):
         self.logger = logging.getLogger(__name__)
 
     def setting(self):
+        self.logger.setLevel(logging.CRITICAL)
+        self.logger.setLevel(logging.ERROR)
         self.logger.setLevel(logging.DEBUG)
         self.logger.setLevel(logging.INFO)
+
+        handler = StreamHandler(stream=sys.stdout)
+        handler.setFormatter(Formatter(fmt='[%(asctime)s: %(levelname)s] %(message)s'))
+        self.logger.addHandler(handler)
+
 
     def prepare_dir(self, dir_name):
         directory = os.path.dirname(os.path.abspath(__file__))
@@ -56,10 +64,11 @@ class Logger:
         self.setting()
         self.logger.addHandler(logging.FileHandler(file_path))
 
+
         return self.logger
 
 
-class WriteCSV:
+class WriteCSV: #Класс для работы с csv файлами.
     CSV_HEADERS = [
         "price_datetime",
         "price",
@@ -77,20 +86,38 @@ class WriteCSV:
         "sku_images",
     ]
 
-    def __init__(self):
-        csvfile = open('categories.csv', 'w', encoding='utf8')
-        self.csv_file = csv.writer(csvfile, delimiter=';')
-        self.csv_writer = csv.DictWriter(
-                csvfile, 
+    def __init__(self, output_dir):
+        directory = os.path.dirname(os.path.abspath(__file__))
+        directory = os.path.join(directory, output_dir)      
+        if not os.path.exists(directory): 
+            os.makedirs(directory) 
+
+        csv_categories_path = os.path.join(directory, 'categories.csv')
+        csv_categories = open(csv_categories_path, 'w', encoding='utf8')
+        self.csv_file_categories = csv.writer(csv_categories, delimiter=';')
+        self.csv_writer_categories = csv.DictWriter(
+                csv_categories, 
+                fieldnames=["name", "id", "parent_id"]
+                )
+        self.csv_writer_categories.writeheader()
+
+        csv_products_path =os.path.join(directory, 'products.csv')
+        csv_products = open(csv_products_path, 'w', encoding='utf8')
+        self.csv_file_products = csv.writer(csv_products, delimiter=';')
+        self.csv_writer_products = csv.DictWriter(
+                csv_products, 
                 fieldnames=self.CSV_HEADERS
                 )
-        self.csv_writer.writeheader()
+        self.csv_writer_products.writeheader()
     
     def write_article(self, dict_article):
-        self.csv_writer.writerow(dict_article)
+        self.csv_writer_products.writerow(dict_article)
+
+    def write_id(self, dict_id):
+        self.csv_writer_categories.writerow(dict_id)
 
 
-class HandlerHTML:
+class HandlerHTML: #Класс для обработки HTML.
     def __init__(self, data):
         self.processed_html = BeautifulSoup(data["response"].text, 
                                             "html.parser")
@@ -106,6 +133,7 @@ class HandlerHTML:
             section_attrs = subcategorie.find("a").attrs
             section = {
                 "section_url": section_attrs.get("href"),
+                "section_name": section_attrs.get("title")
             }
 
             sections.append(section)
@@ -124,7 +152,8 @@ class HandlerHTML:
         for product in products:
             product_content = product.find("a", class_="name").attrs
             product = {
-                "product_url": product_content.get("href")
+                "product_url": product_content.get("href"),
+                "product_name": product_content.get("title")
             }
             
             products_list.append(product)
@@ -245,25 +274,23 @@ class HandlerHTML:
         return (more_page, next_page_url)
 
 
-class Parser:
+class Parser: #Родительские класс для создания необходимых экземпляров классов и настройки правил запросов.
     def __init__(self):
         self.settings = Config().get()
         self.logger = Logger().launch(self.settings["logs_dir"])
-        self.csv_writer = WriteCSV()
+        self.csv_writer = WriteCSV(self.settings["output_directory"])
         self.session = requests.Session()
         self.req_timestamp = time.time()
         self.max_retries = self.settings["max_retries"]
         self.delay_min_s = self.settings["delay_range_s"][0]
         self.delay_max_s = self.settings["delay_range_s"][1]
+        self.counter_id = 0
 
-    def do_request(self, args):
+    def do_request(self, args):    
         url = args.get("url")
         headers = args.get("headers")
         handler = args.get("handler")
         arg = args.get("args")
-
-        if not handler or not url:
-            pass
         
         while self.max_retries>0:
             now_timestamp = time.time()-self.req_timestamp
@@ -281,6 +308,7 @@ class Parser:
             )
 
             if str(r.status_code).startswith(('4', '5')):
+                self.logger.warning(f'Проблемы с запросом по адресу - {url}.')
                 self.max_retries -= 1
                 continue
             else:
@@ -292,7 +320,7 @@ class Parser:
         })
 
 
-class Zoo(Parser):
+class Zoo(Parser): # Класс-парсер сайта
     CATEGORIES = {
         "Собаки": "sobak",
         "Кошки": "koshek",
@@ -344,6 +372,9 @@ class Zoo(Parser):
 
     def get_categotie(self):
         for categorie in self.categories:
+            self.logger.info(f"Начало обработки категории \"{categorie}\".")
+            start_time = time.time()
+            
             self.do_request({
                 "url": f"https://zootovary.ru/catalog/tovary-i-korma-dlya-{self.CATEGORIES[categorie]}/",
                 "headers": self.headers,
@@ -351,21 +382,41 @@ class Zoo(Parser):
                 "args": {"categorie": categorie}
             })
 
-    def get_subcategotie(self, data):
-        for section in HandlerHTML(data).handler_subcategorie():
-            section.update(data["args"])
-            section['section_url'] = f"https://zootovary.ru{section['section_url']}"
+            self.logger.info(f"Категория \"{categorie}\" обработана. Потраченное время - {time.time() - start_time}")
 
+    def get_subcategotie(self, data):
+        self.counter_id += 1
+        parent_id = self.counter_id
+        self.csv_writer.write_id({
+            "name": data["args"]["categorie"],
+            "id": parent_id
+        })       
+        for section in HandlerHTML(data).handler_subcategorie():
+            self.logger.info(f"Начало обработки раздела \"{section['section_name']}\".")
+            start_time = time.time()
+            section.update(data["args"])
+
+            self.counter_id += 1
+            self.csv_writer.write_id({
+                "name": section["section_name"],
+                "parent_id": parent_id,
+                "id": self.counter_id
+            })
+            
+            section['section_url'] = f"https://zootovary.ru{section['section_url']}"
             self.do_request({
                 "url": section['section_url'],
                 "headers": self.headers,
                 "handler": self.get_section,
                 "args": section
             })
+            self.logger.info(f"Раздел \"{section['section_name']}\" обработан. Потраченное время - {time.time() - start_time}")
 
     def get_section(self, data):
         products, status, next_page_url = HandlerHTML(data).handler_section()
         for product in products:
+            self.logger.info(f"Обработка продукта {product['product_name']}.")
+
             product.update(data["args"])
             product['product_url'] = f"https://zootovary.ru{product['product_url']}"
 
@@ -393,4 +444,12 @@ class Zoo(Parser):
             
 
 if __name__ == "__main__":
-    parser = Zoo().launch()
+    parser = Zoo()
+    # Не лучший способ перезапуски скрипта при фатальной ошибки, но на хорошую реализацию не хватало времени
+    while parser.settings["restart"]["restart_count"] > 0: 
+        try:
+            parser.launch()
+        except Exception as exc:
+            parser.logger.critical(exc)
+            parser.settings["restart"]["restart_count"] -= 1
+            time.sleep(parser.settings["restart"]["interval_m"]*60)
