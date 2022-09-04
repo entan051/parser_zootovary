@@ -15,21 +15,18 @@ class Config: #Класс для работы с конфигурационны�
     def __init__(self):
         with open("default.json", "r") as default_config_file:
             self.settings = json.load(default_config_file)
-        
+
         with open("config.json", "r") as config_file:
             self.settings.update(json.load(config_file))        
 
     def get(self):
         if self.settings["delay_range_s"] == "0":
             self.settings["delay_range_s"] = (0, 0)
-        elif not self.settings["delay_range_s"]:
-            self.settings["delay_range_s"] = (1, 3)
         else:
             self.settings["delay_range_s"] = tuple(map(
                 int, 
                 self.settings["delay_range_s"].split("-")
             ))
-
         return self.settings
 
 
@@ -37,15 +34,26 @@ class Logger: #Класс для работы с log файлами и наст�
     def __init__(self):
         self.logger = logging.getLogger(__name__)
 
-    def setting(self):
+    def setting(self, dir_name):
         self.logger.setLevel(logging.CRITICAL)
         self.logger.setLevel(logging.ERROR)
         self.logger.setLevel(logging.DEBUG)
         self.logger.setLevel(logging.INFO)
 
-        handler = StreamHandler(stream=sys.stdout)
-        handler.setFormatter(Formatter(fmt='[%(asctime)s: %(levelname)s] %(message)s'))
+        file_path = os.path.join(
+                self.prepare_dir(dir_name), 
+                'log_file.log'
+                ) 
+        handler = StreamHandler(
+                stream=sys.stdout
+                )
+        handler.setFormatter(
+                Formatter(fmt='[%(asctime)s: %(levelname)s] - %(message)s')
+                )
         self.logger.addHandler(handler)
+        self.logger.addHandler(logging.FileHandler(file_path))
+
+        return self.logger
 
 
     def prepare_dir(self, dir_name):
@@ -53,19 +61,11 @@ class Logger: #Класс для работы с log файлами и наст�
         directory = os.path.join(directory, dir_name)      
         if not os.path.exists(directory): 
             os.makedirs(directory) 
-
+        
         return dir_name
 
     def launch(self, dir_name): 
-        file_path = os.path.join(
-                self.prepare_dir(dir_name), 
-                'log_file.log'
-                ) 
-        self.setting()
-        self.logger.addHandler(logging.FileHandler(file_path))
-
-
-        return self.logger
+        return self.setting(dir_name)
 
 
 class WriteCSV: #Класс для работы с csv файлами.
@@ -130,10 +130,12 @@ class HandlerHTML: #Класс для обработки HTML.
                 ).find_all("li")
 
         for subcategorie in subcategories:
-            section_attrs = subcategorie.find("a").attrs
+            section = [
+                    sub.attrs for sub in subcategorie.find_all("a") 
+                    if sub.attrs.get("title")]
             section = {
-                "section_url": section_attrs.get("href"),
-                "section_name": section_attrs.get("title")
+                "section_url": section[0].get("href"),
+                "section_name": section[0].get("title")
             }
 
             sections.append(section)
@@ -146,7 +148,7 @@ class HandlerHTML: #Класс для обработки HTML.
         next_page_url = ""
         products = self.processed_html.find_all(
                 "div", 
-                class_="catalog-item catalog-itemlist"
+                class_="catalog-item"
                 )
 
         for product in products:
@@ -168,10 +170,7 @@ class HandlerHTML: #Класс для обработки HTML.
                 class_="breadcrumb-navigation"
                 ).text[20:].replace(" → ", " | ")
         sku_name = sku_category.split(" | ")[-1] 
-        sku_country = self.processed_html.find(
-                "div", 
-                class_="catalog-element-offer-left"
-                ).find("p").text.split(": ")[-1]
+
         articles = self.processed_html.find_all(
                 "tr", 
                 class_="b-catalog-element-offer"
@@ -180,6 +179,12 @@ class HandlerHTML: #Класс для обработки HTML.
                 "div", 
                 class_="catalog-element-small-picture"
                 ) 
+        sku_country = self.processed_html.find(
+                "div", 
+                class_="catalog-element-offer-left"
+                ).find("p")
+        if sku_country:
+            sku_country = sku_country.text.split(": ")[-1]
 
         sku_images = []
         for photo in photos:
@@ -219,7 +224,9 @@ class HandlerHTML: #Класс для обработки HTML.
                 price = tr[4].find("s").text.replace("р", "")
                 price_promo = tr[4].find("span").text.replace("р", "")
             else:
-                price = tr[4].find("span").text.replace("р", "")
+                price = tr[4].find("span")
+                if price:
+                    price = price.text.replace("р", "")
                 price_promo = ""
 
             if tr[-1].find("catalog-item-no-stock"):
@@ -244,6 +251,7 @@ class HandlerHTML: #Класс для обработки HTML.
         
     def check_next_page(self):
         more_page = False
+        next_page = None
         next_page_url = ""
         navigation = self.processed_html.find(
                 "div", 
@@ -251,22 +259,28 @@ class HandlerHTML: #Класс для обработки HTML.
                 )
 
         if navigation:
-            if navigation.find_all("a")[-1].text == "»":
-                last_page = int(navigation.find_all("a")[-2].text)
-            else:
-                last_page = int(navigation.find_all("a")[-1].text)
             current_page = int(navigation.find(
                     "span", 
                     class_="navigation-current"
                     ).text)
-        
+            if navigation.find_all("a")[-1].text == "»":
+                last_page = int(navigation.find_all("a")[-2].text)
+            else:
+                last_page = int(navigation.find_all("a")[-1].text)
+
             if last_page > current_page:
                 more_page = True
                 next_page = current_page + 1
+            else:
+                more_page = False
+                next_page = 0
+
         else:
             return (more_page, next_page_url)
 
         for page in navigation.find_all("a"):
+            if page.text == "«":
+                continue
             if int(page.text) == next_page:
                 next_page_url = page["href"]
                 break
@@ -280,6 +294,7 @@ class Parser: #Родительские класс для создания не�
         self.logger = Logger().launch(self.settings["logs_dir"])
         self.csv_writer = WriteCSV(self.settings["output_directory"])
         self.session = requests.Session()
+
         self.req_timestamp = time.time()
         self.max_retries = self.settings["max_retries"]
         self.delay_min_s = self.settings["delay_range_s"][0]
@@ -314,10 +329,17 @@ class Parser: #Родительские класс для создания не�
             else:
                 break
 
-        handler({
-            "response": r,
-            "args": arg,
-        })
+        while self.settings["restart"]["restart_count"] >= 0: 
+            try:
+                handler({
+                    "response": r,
+                    "args": arg,
+                })
+                break
+            except Exception as exp:
+                self.logger.critical(exp, exc_info=True)
+                self.settings["restart"]["restart_count"] -= 1
+                time.sleep(self.settings["restart"]["interval_m"]*60)
 
 
 class Zoo(Parser): # Класс-парсер сайта
@@ -368,11 +390,15 @@ class Zoo(Parser): # Класс-парсер сайта
             if header in self.DEFAULT_HEADERS:
                 self.headers[header] = self.DEFAULT_HEADERS[header]
 
+        self.logger.info("Запуск парсера...")
+        self.logger.info(f"Список категорий для парсинга: {self.categories}")
+        start_time = time.time()
         self.get_categotie()
+        self.logger.info(f"Парсер закончил работу. Время выполнения: {time.time() - start_time}")
 
     def get_categotie(self):
         for categorie in self.categories:
-            self.logger.info(f"Начало обработки категории \"{categorie}\".")
+            self.logger.info(f"Обработки категории \"{categorie}\".")
             start_time = time.time()
             
             self.do_request({
@@ -382,7 +408,7 @@ class Zoo(Parser): # Класс-парсер сайта
                 "args": {"categorie": categorie}
             })
 
-            self.logger.info(f"Категория \"{categorie}\" обработана. Потраченное время - {time.time() - start_time}")
+            self.logger.info(f"Категория \"{categorie}\" обработана. Время выполнения: {time.time() - start_time}")
 
     def get_subcategotie(self, data):
         self.counter_id += 1
@@ -392,17 +418,17 @@ class Zoo(Parser): # Класс-парсер сайта
             "id": parent_id
         })       
         for section in HandlerHTML(data).handler_subcategorie():
-            self.logger.info(f"Начало обработки раздела \"{section['section_name']}\".")
+            self.logger.info(f"Обработка раздела \"{section['section_name']}\".")
             start_time = time.time()
             section.update(data["args"])
-
+            
             self.counter_id += 1
             self.csv_writer.write_id({
                 "name": section["section_name"],
                 "parent_id": parent_id,
                 "id": self.counter_id
             })
-            
+
             section['section_url'] = f"https://zootovary.ru{section['section_url']}"
             self.do_request({
                 "url": section['section_url'],
@@ -410,12 +436,12 @@ class Zoo(Parser): # Класс-парсер сайта
                 "handler": self.get_section,
                 "args": section
             })
-            self.logger.info(f"Раздел \"{section['section_name']}\" обработан. Потраченное время - {time.time() - start_time}")
+            self.logger.info(f"Раздел \"{section['section_name']}\" обработан. Время выполнения: {time.time() - start_time}")
 
     def get_section(self, data):
         products, status, next_page_url = HandlerHTML(data).handler_section()
         for product in products:
-            self.logger.info(f"Обработка продукта {product['product_name']}.")
+            self.logger.info(f"Обработка продукта \"{product['product_name']}\".")
 
             product.update(data["args"])
             product['product_url'] = f"https://zootovary.ru{product['product_url']}"
@@ -444,12 +470,5 @@ class Zoo(Parser): # Класс-парсер сайта
             
 
 if __name__ == "__main__":
-    parser = Zoo()
-    # Не лучший способ перезапуски скрипта при фатальной ошибки, но на хорошую реализацию не хватало времени
-    while parser.settings["restart"]["restart_count"] > 0: 
-        try:
-            parser.launch()
-        except Exception as exc:
-            parser.logger.critical(exc)
-            parser.settings["restart"]["restart_count"] -= 1
-            time.sleep(parser.settings["restart"]["interval_m"]*60)
+    parser = Zoo().launch()
+

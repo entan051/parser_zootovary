@@ -2,7 +2,7 @@
     "categories": [],
     "output_directory": "",
     "logs_dir": "logs", 
-    "delay_range_s": "2-5", 
+    "delay_range_s": "0", 
     "max_retries": 5, 
     "headers": ["User-agent"], 
     "restart": {
