@@ -5,10 +5,11 @@ import json
 import time
 import random
 import logging
-import requests
 from datetime import datetime
-from bs4 import BeautifulSoup
 from logging import StreamHandler, Formatter
+
+import requests
+from bs4 import BeautifulSoup
 
 
 class Config: #Класс для работы с конфигурационными файлами.
