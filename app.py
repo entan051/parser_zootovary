@@ -7,6 +7,7 @@ import random
 import logging
 from datetime import datetime
 from logging import StreamHandler, Formatter
+from unicodedata import category
 
 import requests
 from bs4 import BeautifulSoup
@@ -95,18 +96,18 @@ class WriteCSV: #Класс для работы с csv файлами.
 
         csv_categories_path = os.path.join(directory, 'categories.csv')
         csv_categories = open(csv_categories_path, 'w', encoding='utf8')
-        self.csv_file_categories = csv.writer(csv_categories, delimiter=';')
         self.csv_writer_categories = csv.DictWriter(
                 csv_categories, 
+                delimiter=';',
                 fieldnames=["name", "id", "parent_id"]
                 )
         self.csv_writer_categories.writeheader()
 
         csv_products_path =os.path.join(directory, 'products.csv')
         csv_products = open(csv_products_path, 'w', encoding='utf8')
-        self.csv_file_products = csv.writer(csv_products, delimiter=';')
         self.csv_writer_products = csv.DictWriter(
                 csv_products, 
+                delimiter=';',
                 fieldnames=self.CSV_HEADERS
                 )
         self.csv_writer_products.writeheader()
@@ -122,6 +123,20 @@ class HandlerHTML: #Класс для обработки HTML.
     def __init__(self, data):
         self.processed_html = BeautifulSoup(data["response"].text, 
                                             "html.parser")
+
+    def handler_categorie(self):
+        categories = []
+        
+        categories_bs = self.processed_html.find_all(
+                "a", 
+                class_="catalog-menu-icon"
+                )
+
+        for categorie in categories_bs:
+            categories.append((categorie.text, categorie["href"]))
+            
+        return categories
+
 
     def handler_subcategorie(self):
         sections = []
@@ -153,13 +168,15 @@ class HandlerHTML: #Класс для обработки HTML.
                 )
 
         for product in products:
-            product_content = product.find("a", class_="name").attrs
-            product = {
-                "product_url": product_content.get("href"),
-                "product_name": product_content.get("title")
-            }
-            
-            products_list.append(product)
+            product_content = product.find("a", class_="name")
+            if product_content:
+                product_content = product_content.attrs
+                product = {
+                    "product_url": product_content.get("href"),
+                    "product_name": product_content.get("title")
+                }
+
+                products_list.append(product)
 
         more_page, next_page_url = self.check_next_page()
         return (products_list, more_page, next_page_url)
@@ -169,8 +186,15 @@ class HandlerHTML: #Класс для обработки HTML.
         sku_category = self.processed_html.find(
                 "ul", 
                 class_="breadcrumb-navigation"
-                ).text[20:].replace(" → ", " | ")
-        sku_name = sku_category.split(" | ")[-1] 
+                )
+        if sku_category:
+            sku_category = sku_category.text[20:].replace(
+                    " → ", 
+                    "|"
+                    )
+            sku_name = sku_category.split("|")[-1] 
+        else:
+            sku_category = None
 
         articles = self.processed_html.find_all(
                 "tr", 
@@ -205,10 +229,21 @@ class HandlerHTML: #Класс для обработки HTML.
             sku_status = 1
 
             tr = article.find_all("td")
-            sku_article = tr[0].find_all("b")[-1].text
-            sku_barcode = tr[1].find_all("b")[-1].text
+            if len(tr) < 5:
+                continue
+
+            sku_article = tr[0].find_all("b")
+            if sku_article:
+                sku_article = sku_article[-1].text
             
-            size = tr[2].find_all("b")[-1].text
+            sku_barcode = tr[1].find_all("b")
+            if sku_barcode:
+                sku_barcode = sku_barcode[-1].text
+            
+            size = tr[2].find_all("b")
+            if size:
+                size = size[-1].text
+                
             if size.endswith("л"):
                 sku_volume_min = size[:-1]
             elif size.endswith("кг"):
@@ -217,17 +252,20 @@ class HandlerHTML: #Класс для обработки HTML.
                 sku_weight_min = size[:-1]
             elif size.endswith("шт"):
                 sku_quantity_min = size[:-2]
-            else:
-                pass #TODO
 
 
             if tr[4].find("s"):
-                price = tr[4].find("s").text.replace("р", "")
-                price_promo = tr[4].find("span").text.replace("р", "")
+                price = tr[4].find("s")
+                if price:
+                    price = int(price.text.replace("р", "").replace(" ", ""))
+                
+                price_promo = tr[4].find("span")
+                if price_promo:
+                    price_promo = int(price_promo.text.replace("р", "").replace(" ", ""))
             else:
                 price = tr[4].find("span")
                 if price:
-                    price = price.text.replace("р", "")
+                    price = int(price.text.replace("р", "").replace(" ", ""))
                 price_promo = ""
 
             if tr[-1].find("catalog-item-no-stock"):
@@ -248,6 +286,7 @@ class HandlerHTML: #Класс для обработки HTML.
                 "sku_quantity_min": sku_quantity_min,
                 "sku_images": sku_images,            
                 })
+ 
         return articles_list
         
     def check_next_page(self):
@@ -323,8 +362,8 @@ class Parser: #Родительские класс для создания не�
                 headers=headers,
             )
 
-            if str(r.status_code).startswith(('4', '5')):
-                self.logger.warning(f'Проблемы с запросом по адресу - {url}.')
+            if str(r.status_code) not in ["200"]:
+                self.logger.warning(f'Статус код - {r.status_code}. Проблемы с запросом по адресу - {url}.')
                 self.max_retries -= 1
                 continue
             else:
@@ -344,26 +383,6 @@ class Parser: #Родительские класс для создания не�
 
 
 class Zoo(Parser): # Класс-парсер сайта
-    CATEGORIES = {
-        "Собаки": "sobak",
-        "Кошки": "koshek",
-        "Птицы": "ptits",
-        "Грызуны": "gryzunov",
-        "Рыбы": "ryb",
-        "Рептилии": "reptiliy",
-        "Хорьки": "khorkov",
-    }
-
-    DEFAULT_CATEGORIES = [
-        "Собаки",
-        "Кошки",
-        "Птицы",
-        "Грызуны",
-        "Рыбы",
-        "Рептилии",
-        "Хорьки",
-    ]
-
     DEFAULT_HEADERS = {
         "accept": 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9',
         "accept-encoding": 'gzip, deflate, br',
@@ -381,29 +400,33 @@ class Zoo(Parser): # Класс-парсер сайта
     }
 
     def launch(self):
-        if not self.settings["categories"]:
-            self.categories = self.DEFAULT_CATEGORIES
-        else:
-            self.categories = self.settings["categories"]
-        
         self.headers = {}
         for header in self.settings["headers"]:
             if header in self.DEFAULT_HEADERS:
                 self.headers[header] = self.DEFAULT_HEADERS[header]
 
         self.logger.info("Запуск парсера...")
-        self.logger.info(f"Список категорий для парсинга: {self.categories}")
         start_time = time.time()
-        self.get_categotie()
+        self.do_request({
+            "url": f"https://zootovary.ru/",
+            "headers": self.headers,
+            "handler": self.get_categotie,
+            "args": {}
+        })
         self.logger.info(f"Парсер закончил работу. Время выполнения: {time.time() - start_time}")
 
-    def get_categotie(self):
-        for categorie in self.categories:
+    def get_categotie(self, data):
+        categories = HandlerHTML(data).handler_categorie()
+        for categorie in categories:
+            categorie, url = categorie
+            if categorie not in self.settings["categories"] and self.settings["categories"]:
+                continue
+
             self.logger.info(f"Обработки категории \"{categorie}\".")
             start_time = time.time()
             
             self.do_request({
-                "url": f"https://zootovary.ru/catalog/tovary-i-korma-dlya-{self.CATEGORIES[categorie]}/",
+                "url": f"https://zootovary.ru{url}",
                 "headers": self.headers,
                 "handler": self.get_subcategotie,
                 "args": {"categorie": categorie}
@@ -445,10 +468,9 @@ class Zoo(Parser): # Класс-парсер сайта
             self.logger.info(f"Обработка продукта \"{product['product_name']}\".")
 
             product.update(data["args"])
-            product['product_url'] = f"https://zootovary.ru{product['product_url']}"
 
             self.do_request({
-                "url": product['product_url'],
+                "url": f"https://zootovary.ru{product['product_url']}",
                 "headers": self.headers,
                 "handler": self.get_product,
                 "args": product
